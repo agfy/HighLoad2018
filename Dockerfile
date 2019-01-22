@@ -4,15 +4,13 @@ RUN apk update && apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
-# Copy the current directory contents into the container at /app
 COPY . /app
 
-RUN ["go", "get", "-u", "github.com/valyala/fasthttp"]
+RUN go get -u github.com/valyala/fasthttp
+RUN go get -u github.com/buger/jsonparser
 
-# Make port 80 available to the world outside this container
-EXPOSE 80
+#EXPOSE 80
 
-# Run go build when the container launches
-RUN ["go", "build"]
+RUN go build
 
-CMD ["./app"]
+CMD ./app
