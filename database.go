@@ -1,34 +1,33 @@
 package main
 
 import (
+	"archive/zip"
 	"fmt"
 	"github.com/buger/jsonparser"
 	"io/ioutil"
+	"log"
 	"os"
-	"os/exec"
-
 	//"os/exec"
 	"runtime"
-	"strconv"
 )
 
 func initializeSchema() (db *Schema) {
 	db = &Schema{make(map[uint32]*Account, 0), make(map[string]struct{}), make(map[string]struct{})}
 
-	_, err := exec.Command("sh", "-c", "unzip /tmp/data/data.zip -d /tmp/base/").Output()
+	file, err := zip.OpenReader("/tmp/data/data.zip")
+	//file, err := zip.OpenReader("C:\\Users\\agfy1\\Downloads\\test_accounts_140119\\data\\data.zip")
 	if err != nil {
-		_, _ = fmt.Fprintln(os.Stdout, err.Error())
+		log.Fatal(err)
 	}
+	defer file.Close()
 
-	id := 1
-	var fileName = "/tmp/base/accounts_" + strconv.Itoa(id) + ".json"
-	//var fileName = "C:\\Users\\agfy1\\Downloads\\test_accounts_140119\\data\\data\\accounts_" + strconv.Itoa(id) + ".json"
-
-	for fileExists(fileName) {
-		dat, _ := ioutil.ReadFile(fileName)
-		c := 0
-		_, _ = jsonparser.ArrayEach(dat, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
-			c++
+	for _, f := range file.File {
+		rc, err := f.Open()
+		if err != nil {
+			log.Fatal(err)
+		}
+		bs, _ := ioutil.ReadAll(rc)
+		_, _ = jsonparser.ArrayEach(bs, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
 			id, _ := jsonparser.GetInt(value, "id")
 			email, _ := jsonparser.GetString(value, "email")
 			db.emails[email] = struct{}{}
@@ -69,10 +68,6 @@ func initializeSchema() (db *Schema) {
 					uint32(premFinish)}, &likes}
 			db.accounts[uint32(id)] = a
 		}, "accounts")
-		id++
-		fileName = "/tmp/base/users_" + strconv.Itoa(id) + ".json"
-		//fileName = "C:\\Users\\agfy1\\Downloads\\test_accounts_140119\\data\\data\\accounts_" + strconv.Itoa(id) + ".json"
-
 	}
 	runtime.GC()
 
