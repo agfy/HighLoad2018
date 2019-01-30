@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-var db = initializeSchema()
+var indexes, db = initializeDataBase()
 
 func addAccount(ctx *fasthttp.RequestCtx) {
-	a := &Account{}
+	a := Account{}
 	body := ctx.Request.Body()
 
 	var idExist, emailExist, sexExist, birthExist, joinedExist, statusExist, errorExist bool
@@ -33,11 +33,6 @@ func addAccount(ctx *fasthttp.RequestCtx) {
 			idExist = true
 		case bytes.Equal(key, []byte("email")) && dataType == jsonparser.String:
 			a.email = string(value)
-			/*
-				if _, ok := db.emails[a.email]; ok {
-					return nil
-				}
-			*/
 			emailExist = true
 		case bytes.Equal(key, []byte("fname")) && dataType == jsonparser.String:
 			a.fName = string(value)
@@ -45,7 +40,7 @@ func addAccount(ctx *fasthttp.RequestCtx) {
 			a.sName = string(value)
 		case bytes.Equal(key, []byte("phone")) && dataType == jsonparser.String:
 			a.phone = string(value)
-			if _, ok := db.phones[a.phone]; ok {
+			if _, ok := indexes.phones[a.phone]; ok {
 				errorExist = true
 				return nil
 			}
@@ -91,34 +86,31 @@ func addAccount(ctx *fasthttp.RequestCtx) {
 
 			statusExist = true
 		case bytes.Equal(key, []byte("interests")) && dataType == jsonparser.Array:
-			interests := make([]string, 0)
+			a.interests = make([]string, 0)
 			_, _ = jsonparser.ArrayEach(value, func(element []byte, dataType jsonparser.ValueType, offset int, err error) {
-				interests = append(interests, string(element[:]))
+				a.interests = append(a.interests, string(element[:]))
 			})
-
-			a.interests = &interests
 		case bytes.Equal(key, []byte("premium")) && dataType == jsonparser.Object:
 			premStart, err := jsonparser.GetInt(value, "start")
 			if err != nil {
 				return nil
 			}
-			a.premium.start = uint32(premStart)
+			a.premiumStart = uint32(premStart)
 
 			premFinish, err := jsonparser.GetInt(value, "finish")
 			if err != nil {
 				return nil
 			}
-			a.premium.finish = uint32(premFinish)
+			a.premiumFinish = uint32(premFinish)
 		case bytes.Equal(key, []byte("likes")) && dataType == jsonparser.Array:
-			likes := make([]Like, 0)
+			a.likeIds = make([]uint32, 0)
+			a.likeTss = make([]uint32, 0)
 			_, _ = jsonparser.ArrayEach(value, func(element []byte, dataType jsonparser.ValueType, offset int, err error) {
 				likeId, _ := jsonparser.GetInt(value, "id")
 				likeTs, _ := jsonparser.GetInt(value, "ts")
-				likes = append(likes, Like{uint32(likeId), uint32(likeTs)})
+				a.likeIds = append(a.likeIds, uint32(likeId))
+				a.likeTss = append(a.likeTss, uint32(likeTs))
 			})
-
-			a.likes = &likes
-			//likesExist = true
 		}
 
 		return nil
@@ -126,22 +118,26 @@ func addAccount(ctx *fasthttp.RequestCtx) {
 	if !idExist || !emailExist || !sexExist || !birthExist || !joinedExist || !statusExist || errorExist {
 		ctx.SetStatusCode(400)
 	} else {
-		db.emails[a.email] = struct{}{}
-		db.phones[a.phone] = struct{}{}
+		indexes.accounts[a.id] = struct{}{}
+		indexes.emails[a.email] = struct{}{}
+		indexes.phones[a.phone] = struct{}{}
 
 		ctx.SetBody([]byte("{}"))
 		ctx.SetStatusCode(201)
-		db.accounts[a.id] = a
+		err := insertAccount(&a, db)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }
 
 func editAccount(id uint32, ctx *fasthttp.RequestCtx) {
-	if _, ok := db.accounts[id]; !ok {
+	if _, ok := indexes.accounts[id]; !ok {
 		ctx.SetStatusCode(404)
 		return
 	}
 
-	accountCopy := *db.accounts[id]
+	accountCopy := getAccount(id, db)
 	body := ctx.Request.Body()
 
 	var errorExist bool
@@ -157,7 +153,7 @@ func editAccount(id uint32, ctx *fasthttp.RequestCtx) {
 				return nil
 			}
 			accountCopy.email = string(value)
-			if _, ok := db.emails[accountCopy.email]; ok || !strings.Contains(accountCopy.email, "@") {
+			if _, ok := indexes.emails[accountCopy.email]; ok || !strings.Contains(accountCopy.email, "@") {
 				errorExist = true
 				return nil
 			}
@@ -179,7 +175,7 @@ func editAccount(id uint32, ctx *fasthttp.RequestCtx) {
 				return nil
 			}
 			accountCopy.phone = string(value)
-			if _, ok := db.phones[accountCopy.phone]; ok {
+			if _, ok := indexes.phones[accountCopy.phone]; ok {
 				errorExist = true
 				return nil
 			}
@@ -248,12 +244,10 @@ func editAccount(id uint32, ctx *fasthttp.RequestCtx) {
 				errorExist = true
 				return nil
 			}
-			interests := make([]string, 0)
+			accountCopy.interests = make([]string, 0)
 			_, _ = jsonparser.ArrayEach(value, func(element []byte, dataType jsonparser.ValueType, offset int, err error) {
-				interests = append(interests, string(element[:]))
+				accountCopy.interests = append(accountCopy.interests, string(element[:]))
 			})
-
-			accountCopy.interests = &interests
 		case bytes.Equal(key, []byte("premium")):
 			if dataType != jsonparser.Object {
 				errorExist = true
@@ -263,19 +257,20 @@ func editAccount(id uint32, ctx *fasthttp.RequestCtx) {
 			if err != nil {
 				return nil
 			}
-			accountCopy.premium.start = uint32(premStart)
+			accountCopy.premiumStart = uint32(premStart)
 
 			premFinish, err := jsonparser.GetInt(value, "finish")
 			if err != nil {
 				return nil
 			}
-			accountCopy.premium.finish = uint32(premFinish)
+			accountCopy.premiumFinish = uint32(premFinish)
 		case bytes.Equal(key, []byte("likes")):
 			if dataType != jsonparser.Array {
 				errorExist = true
 				return nil
 			}
-			likes := make([]Like, 0)
+			accountCopy.likeIds = make([]uint32, 0)
+			accountCopy.likeTss = make([]uint32, 0)
 			_, _ = jsonparser.ArrayEach(value, func(element []byte, dataType jsonparser.ValueType, offset int, err error) {
 				likeId, err1 := jsonparser.GetInt(value, "id")
 				likeTs, err2 := jsonparser.GetInt(value, "ts")
@@ -283,10 +278,9 @@ func editAccount(id uint32, ctx *fasthttp.RequestCtx) {
 					errorExist = true
 					return
 				}
-				likes = append(likes, Like{uint32(likeId), uint32(likeTs)})
+				accountCopy.likeIds = append(accountCopy.likeIds, uint32(likeId))
+				accountCopy.likeTss = append(accountCopy.likeTss, uint32(likeTs))
 			})
-
-			accountCopy.likes = &likes
 		}
 
 		return nil
@@ -295,9 +289,9 @@ func editAccount(id uint32, ctx *fasthttp.RequestCtx) {
 	if errorExist {
 		ctx.SetStatusCode(400)
 	} else {
-		db.accounts[id] = &accountCopy
-		db.emails[accountCopy.email] = struct{}{}
-		db.phones[accountCopy.phone] = struct{}{}
+		updateAccount(accountCopy, db)
+		indexes.emails[accountCopy.email] = struct{}{}
+		indexes.phones[accountCopy.phone] = struct{}{}
 
 		ctx.SetBody([]byte("{}"))
 		ctx.SetStatusCode(202)
@@ -359,11 +353,11 @@ func addLikes(ctx *fasthttp.RequestCtx) {
 			errorExist = true
 			return
 		} else {
-			if _, ok := db.accounts[like.liker]; !ok {
+			if _, ok := indexes.accounts[like.liker]; !ok {
 				errorExist = true
 				return
 			}
-			if _, ok := db.accounts[like.likee]; !ok {
+			if _, ok := indexes.accounts[like.likee]; !ok {
 				errorExist = true
 				return
 			}
@@ -378,11 +372,19 @@ func addLikes(ctx *fasthttp.RequestCtx) {
 		return
 	} else {
 		for _, like := range requestLikes {
-			if db.accounts[like.liker].likes == nil {
-				likes := make([]Like, 0)
-				(*db.accounts[like.liker]).likes = &likes
-			}
-			*db.accounts[like.liker].likes = append(*db.accounts[like.liker].likes, Like{like.likee, like.ts})
+			likeIds, likeTss := getLikes(like.liker, db)
+			/*
+				if accountCopy.likeIds == nil {
+					accountCopy.likeIds = make([]uint32, 0)
+				}
+				if accountCopy.likeTss == nil {
+					accountCopy.likeTss = make([]uint32, 0)
+				}
+			*/
+			*likeIds = append(*likeIds, uint32(like.likee))
+			*likeTss = append(*likeTss, uint32(like.ts))
+
+			updateLikes(like.liker, likeIds, likeTss, db)
 		}
 
 		ctx.SetBody([]byte("{}"))
@@ -393,14 +395,19 @@ func addLikes(ctx *fasthttp.RequestCtx) {
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
+	println("fasthttp")
 	s := fasthttp.Server{
 		Handler: handler,
 	}
 
+	println("ListenAndServe")
 	err := s.ListenAndServe("0.0.0.0:80")
 	if err != nil {
 		log.Fatalf("error in ListenAndServe: %s", err)
 	}
+
+	println("exit")
+	//db.Close()
 }
 
 func handler(ctx *fasthttp.RequestCtx) {
@@ -410,11 +417,14 @@ func handler(ctx *fasthttp.RequestCtx) {
 
 	if bytes.Equal(method, []byte("POST")) {
 		if bytes.Equal(path[9:], []byte("/new/")) {
+			println("addAccount")
 			addAccount(ctx)
 		} else if bytes.Equal(path[9:], []byte("/likes/")) {
+			println("addLikes")
 			addLikes(ctx)
 		} else {
 			if id, err := strconv.Atoi(string(path[10 : len(path)-1])); err == nil {
+				println("editAccount")
 				editAccount(uint32(id), ctx)
 			} else {
 				ctx.SetStatusCode(404)
